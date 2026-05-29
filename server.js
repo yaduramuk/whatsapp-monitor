@@ -10,14 +10,48 @@ const qrcodeTerminal = require('qrcode-terminal');
 const admin = require('firebase-admin');
 const express = require('express');
 const fs = require('fs');
+const { execSync } = require('child_process');
+
+// ── Find Chromium automatically ───────────────────────────────────────────────
+// Railway/Debian can install chromium under different names/paths.
+// We try each candidate and use the first one that exists.
+function findChromiumPath() {
+  const candidates = [
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+  ].filter(Boolean);
+
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) {
+        console.log(`✅ Chromium found at: ${p}`);
+        return p;
+      }
+    } catch (_) {}
+  }
+
+  // Last resort: ask the OS
+  try {
+    const found = execSync('which chromium || which chromium-browser || which google-chrome', { encoding: 'utf8' }).trim().split('\n')[0];
+    if (found) { console.log(`✅ Chromium found via which: ${found}`); return found; }
+  } catch (_) {}
+
+  console.error('❌ Could not find Chromium. Check Dockerfile installs chromium package.');
+  process.exit(1);
+}
+
+const CHROMIUM_PATH = findChromiumPath();
 
 // ── Firebase ──────────────────────────────────────────────────────────────────
 let serviceAccount;
 try {
   serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 } catch (e) {
-  console.error('❌ FIREBASE_SERVICE_ACCOUNT env variable is missing or invalid.');
-  console.error('   Railway → your service → Variables → add FIREBASE_SERVICE_ACCOUNT');
+  console.error('❌ FIREBASE_SERVICE_ACCOUNT env variable is missing or invalid JSON.');
+  console.error('   Railway → your service → Variables tab → add FIREBASE_SERVICE_ACCOUNT');
   process.exit(1);
 }
 admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
@@ -26,7 +60,9 @@ console.log('✅ Firebase Admin initialized');
 // ── Express ───────────────────────────────────────────────────────────────────
 const app = express();
 app.use(express.json());
-const PORT = process.env.PORT || 3000;
+
+// Railway sets PORT=8080 by default — always honour it
+const PORT = process.env.PORT || 8080;
 
 // ── Contact Storage ───────────────────────────────────────────────────────────
 let contacts = {};
@@ -58,9 +94,17 @@ const client = new Client({
   authStrategy: new LocalAuth({ dataPath: '/app/.wwebjs_auth' }),
   puppeteer: {
     headless: true,
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-           '--disable-gpu', '--single-process', '--no-zygote'],
+    executablePath: CHROMIUM_PATH,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--single-process',
+      '--no-zygote',
+      '--disable-extensions',
+      '--disable-background-networking',
+    ],
   },
 });
 
@@ -163,8 +207,11 @@ app.get('/qr', (req, res) => {
 });
 
 app.get('/health', (req, res) => res.json({
-  status: 'ok', whatsappReady: isReady,
+  status: 'ok',
+  whatsappReady: isReady,
   contactsMonitored: Object.keys(contacts).length,
+  chromiumPath: CHROMIUM_PATH,
+  port: PORT,
   uptimeSeconds: Math.floor(process.uptime()),
 }));
 
@@ -197,6 +244,10 @@ app.put('/contacts/:phone/token', (req, res) => {
   res.json({ success: true });
 });
 
-app.listen(PORT, () => console.log(`🚀 Server on port ${PORT}`));
+// ── Start ─────────────────────────────────────────────────────────────────────
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server listening on 0.0.0.0:${PORT}`);
+});
+
 client.initialize();
 console.log('🔄 Starting WhatsApp client...');

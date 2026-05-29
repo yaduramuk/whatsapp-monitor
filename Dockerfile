@@ -1,9 +1,10 @@
 FROM node:20-bullseye-slim
 
-# Install Chromium + all dependencies needed by Puppeteer/whatsapp-web.js
+# Install Chromium and all required system libraries
 RUN apt-get update && apt-get install -y \
     chromium \
     fonts-liberation \
+    fonts-noto-color-emoji \
     libappindicator3-1 \
     libasound2 \
     libatk-bridge2.0-0 \
@@ -35,17 +36,24 @@ RUN apt-get update && apt-get install -y \
     libxtst6 \
     ca-certificates \
     wget \
+    gnupg \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# Tell Puppeteer to use the installed Chromium
+# Find where chromium was actually installed and store the real path
+RUN which chromium || which chromium-browser || find / -name "chromium" -type f 2>/dev/null | head -5
+
+# Set environment variables
+# PUPPETEER_EXECUTABLE_PATH is resolved at runtime in server.js, not hardcoded here
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+
+# Railway uses PORT 8080 by default — we honour whatever Railway sets
+ENV PORT=8080
 
 WORKDIR /app
 COPY package*.json ./
 RUN npm install --production
 COPY . .
 
-EXPOSE 3000
+EXPOSE 8080
 CMD ["node", "server.js"]
